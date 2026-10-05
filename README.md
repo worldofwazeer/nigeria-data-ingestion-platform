@@ -1,11 +1,21 @@
 ﻿# Nigeria External Data Ingestion & Integration Platform
 
-Production-oriented backend system built under **World of Wazeer** for acquiring, validating, normalizing, and analyzing external Nigerian datasets.
+A production-oriented data acquisition and integration engine built under **World of Wazeer** for aggregating, validating, normalizing, and analyzing public and partner datasets across Nigeria.
 
-## Architecture Overview
-- **Data Acquisition**: Resilient HTTP/API client with exponential backoff and connection pooling.
-- **Validation & Data Contracts**: Schema enforcement via Pydantic models.
-- **Storage & Analytics**: PostgreSQL persistence for raw and normalized data layers.
+---
 
-## Domain Focus
-- Primary Domain: Agriculture (Market prices, macro indicators, weather patterns).
+## 🟢 Current Project Status: Early Development (Milestone 2)
+
+### Implemented
+- [x] Clean directory hierarchy and Python environment setup
+- [x] Basic entry point execution (`app/main.py`)
+- [x] Initial Git version control and GitHub remote tracking
+
+### Roadmap (In Progress / Planned)
+- [ ] **Data Source Ingestion**: Opaindex API client (Milestone 2)
+- [ ] **HTTP Resilience**: Timeout handling, exponential backoff retries, connection pooling
+- [ ] **Data Contracts & Validation**: Pydantic schema enforcement
+- [ ] **Transformation**: Data normalization and metadata provenance
+- [ ] **Persistence**: PostgreSQL database integration (Raw & Normalized layers)
+- [ ] **Quality Assurance**: Automated testing suite (`pytest`)
+- [ ] **Analytics & API**: Aggregation queries and endpoint exposure
