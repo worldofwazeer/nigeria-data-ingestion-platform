@@ -1,0 +1,15 @@
+﻿[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nigeria-data-ingestion-platform"
+version = "0.1.0"
+description = "Production-oriented data ingestion and integration platform for acquiring, validating, normalizing, and analyzing external Nigerian datasets."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+    "pydantic>=2.0.0"
+]
