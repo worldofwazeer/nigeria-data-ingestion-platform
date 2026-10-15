@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from app.pipeline import ingest_opaindex_prices
+from app import pipeline
 
 
 def valid_response() -> dict:
@@ -30,28 +30,40 @@ def valid_response() -> dict:
     }
 
 
-def test_pipeline_fetches_and_validates() -> None:
-    client = Mock()
-    client.get.return_value = valid_response()
+class FakeConnector:
+    def __init__(self, payload: object = None, error: Exception | None = None) -> None:
+        self.payload = payload
+        self.error = error
 
-    result = ingest_opaindex_prices(client)
+    def fetch_prices(self) -> object:
+        if self.error:
+            raise self.error
+        return self.payload
+
+
+def test_pipeline_fetches_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    connector = FakeConnector(payload=valid_response())
+    monkeypatch.setattr(pipeline, "OpaIndexConnector", lambda client: connector)
+
+    result = pipeline.ingest_opaindex_prices(Mock())
 
     assert result.count == 1
     assert result.prices[0].name == "Palm Oil"
-    client.get.assert_called_once_with("/prices")
 
 
-def test_pipeline_propagates_validation_error() -> None:
-    client = Mock()
-    client.get.return_value = {"prices": []}
+def test_pipeline_propagates_validation_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    connector = FakeConnector(payload=[])
+    monkeypatch.setattr(pipeline, "OpaIndexConnector", lambda client: connector)
 
     with pytest.raises(ValidationError):
-        ingest_opaindex_prices(client)
+        pipeline.ingest_opaindex_prices(Mock())
 
 
-def test_pipeline_propagates_transport_error() -> None:
-    client = Mock()
-    client.get.side_effect = RuntimeError("transport failed")
+def test_pipeline_does_not_swallow_connector_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = RuntimeError("transport failed")
+    connector = FakeConnector(error=failure)
+    monkeypatch.setattr(pipeline, "OpaIndexConnector", lambda client: connector)
 
-    with pytest.raises(RuntimeError, match="transport failed"):
-        ingest_opaindex_prices(client)
+    with pytest.raises(RuntimeError) as error:
+        pipeline.ingest_opaindex_prices(Mock())
+    assert error.value is failure

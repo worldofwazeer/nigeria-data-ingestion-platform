@@ -13,9 +13,8 @@ def test_connector_delegates_to_prices_endpoint() -> None:
     client.get.assert_called_once_with("/prices")
 
 
-def test_connector_rejects_non_object_payload() -> None:
+def test_connector_returns_json_payload_without_schema_validation() -> None:
     client = Mock()
     client.get.return_value = []
 
-    with pytest.raises(ValueError, match="must be a JSON object"):
-        OpaIndexConnector(client).fetch_prices()
+    assert OpaIndexConnector(client).fetch_prices() == []

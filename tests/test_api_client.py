@@ -3,7 +3,14 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from app.api_client import APIClient
+from app.api_client import (
+    APIClient,
+    APIConnectionError,
+    APIHTTPError,
+    APITimeoutError,
+    MalformedJSONError,
+    UnexpectedMediaTypeError,
+)
 from app.config import Settings
 
 
@@ -28,11 +35,20 @@ def test_get_returns_json_and_uses_timeout() -> None:
 def test_get_propagates_http_error() -> None:
     client, session = make_client()
     response = Mock()
-    response.raise_for_status.side_effect = requests.HTTPError("bad status")
+    response.status_code = 503
+    response.raise_for_status.side_effect = requests.HTTPError(
+        "upstream failed: https://example.test/prices?api_key=private-token",
+        response=response,
+    )
     session.get.return_value = response
 
-    with pytest.raises(requests.HTTPError):
-        client.get("prices")
+    with pytest.raises(APIHTTPError) as error:
+        client.get("/prices?api_key=private-token")
+
+    assert error.value.status_code == 503
+    assert str(error.value) == "GET /prices returned HTTP 503"
+    assert isinstance(error.value.__cause__, requests.HTTPError)
+    assert "private-token" not in str(error.value)
 
 
 def test_get_rejects_non_json_and_malformed_json() -> None:
@@ -40,13 +56,38 @@ def test_get_rejects_non_json_and_malformed_json() -> None:
     response = Mock()
     response.headers = {"Content-Type": "text/plain"}
     session.get.return_value = response
-    with pytest.raises(ValueError, match="Expected a JSON response"):
+    with pytest.raises(UnexpectedMediaTypeError, match="unsupported response media type"):
         client.get("prices")
 
     response.headers = {"Content-Type": "application/json"}
-    response.json.side_effect = ValueError("invalid")
-    with pytest.raises(ValueError, match="contained invalid JSON"):
+    parse_error = ValueError("invalid secret=private-token raw-body={...}")
+    response.json.side_effect = parse_error
+    with pytest.raises(MalformedJSONError, match="returned malformed JSON") as error:
         client.get("prices")
+    assert error.value.__cause__ is parse_error
+    assert "private-token" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("request_error", "expected_error"),
+    [
+        (requests.Timeout("timed out with api_key=private-token"), APITimeoutError),
+        (requests.ConnectionError("failed URL has api_key=private-token"), APIConnectionError),
+    ],
+)
+def test_get_wraps_connection_failures_without_leaking_request_details(
+    request_error: requests.RequestException,
+    expected_error: type[APIConnectionError],
+) -> None:
+    client, session = make_client()
+    session.get.side_effect = request_error
+
+    with pytest.raises(expected_error) as error:
+        client.get("/prices?api_key=private-token")
+
+    assert error.value.__cause__ is request_error
+    assert "private-token" not in str(error.value)
+    assert "api_key" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +119,7 @@ def test_get_rejects_unrelated_json_looking_media_types(content_type: str) -> No
     response.headers = {"Content-Type": content_type}
     session.get.return_value = response
 
-    with pytest.raises(ValueError, match="Expected a JSON response"):
+    with pytest.raises(UnexpectedMediaTypeError, match="unsupported response media type"):
         client.get("prices")
 
 

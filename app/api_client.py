@@ -21,6 +21,39 @@ JsonValue: TypeAlias = Union[
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 
 
+class APIClientError(Exception):
+    """Base class for safe, user-facing HTTP client failures."""
+
+
+class APIConnectionError(APIClientError):
+    """A connection could not be established or completed."""
+
+
+class APITimeoutError(APIConnectionError):
+    """The HTTP request exceeded its configured timeout."""
+
+
+class APIHTTPError(APIClientError):
+    """The server returned an unsuccessful HTTP status after retries."""
+
+    def __init__(self, endpoint: str, status_code: int) -> None:
+        self.endpoint = endpoint
+        self.status_code = status_code
+        super().__init__(f"GET {endpoint} returned HTTP {status_code}")
+
+
+class APIResponseError(APIClientError):
+    """The successful HTTP response was not usable JSON."""
+
+
+class UnexpectedMediaTypeError(APIResponseError):
+    """The server did not label its response as a supported JSON media type."""
+
+
+class MalformedJSONError(APIResponseError):
+    """The server labeled its response as JSON, but the body could not be parsed."""
+
+
 class APIClient:
     """Reusable HTTP client configured with explicit application settings."""
 
@@ -54,24 +87,44 @@ class APIClient:
 
     def get(self, endpoint: str, **kwargs: Any) -> JsonValue:
         """GET an endpoint, checking HTTP status and returning parsed JSON."""
+        safe_endpoint = endpoint.split("?", maxsplit=1)[0]
         url = f"{self.settings.base_url}/{endpoint.lstrip('/')}"
         timeout = kwargs.pop("timeout", self.settings.timeout)
-        response = self.session.get(url, timeout=timeout, **kwargs)
-        response.raise_for_status()
+        try:
+            response = self.session.get(url, timeout=timeout, **kwargs)
+        except requests.Timeout as exc:
+            raise APITimeoutError(f"GET {safe_endpoint} timed out") from exc
+        except requests.ConnectionError as exc:
+            raise APIConnectionError(f"GET {safe_endpoint} could not connect") from exc
+
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status_code = response.status_code
+            raise APIHTTPError(safe_endpoint, status_code) from exc
 
         content_type = response.headers.get("Content-Type", "")
         media_type = content_type.split(";", maxsplit=1)[0].strip().lower()
         main_type, separator, subtype = media_type.partition("/")
-        is_json = separator and main_type == "application" and (
-            subtype == "json" or (subtype.endswith("+json") and len(subtype) > len("+json"))
+        is_json = (
+            separator
+            and main_type == "application"
+            and (
+                subtype == "json"
+                or (subtype.endswith("+json") and len(subtype) > len("+json"))
+            )
         )
         if not is_json:
-            raise ValueError(f"Expected a JSON response, got {content_type or 'no content type'}")
+            raise UnexpectedMediaTypeError(
+                f"GET {safe_endpoint} returned an unsupported response media type"
+            )
 
         try:
             return response.json()
         except ValueError as exc:
-            raise ValueError(f"Response from {endpoint} contained invalid JSON") from exc
+            raise MalformedJSONError(
+                f"GET {safe_endpoint} returned malformed JSON"
+            ) from exc
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
