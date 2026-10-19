@@ -2,7 +2,6 @@ from unittest.mock import Mock
 
 import pytest
 import requests
-
 from app.api_client import (
     APIClient,
     APIConnectionError,
@@ -14,10 +13,12 @@ from app.api_client import (
 from app.config import Settings
 
 
-def make_client() -> tuple[APIClient, Mock]:
+def make_client(settings: Settings | None = None) -> tuple[APIClient, Mock]:
     session = Mock(spec=requests.Session)
     session.headers = {}
-    return APIClient(Settings(base_url="https://example.test"), session=session), session
+    return APIClient(
+        settings or Settings(base_url="https://example.test"), session=session
+    ), session
 
 
 def test_get_returns_json_and_uses_timeout() -> None:
@@ -30,6 +31,75 @@ def test_get_returns_json_and_uses_timeout() -> None:
     assert client.get("/prices") == {"ok": True}
     session.get.assert_called_once_with("https://example.test/prices", timeout=15.0)
     response.raise_for_status.assert_called_once_with()
+
+
+def test_get_timeout_argument_overrides_configured_default() -> None:
+    settings = Settings(base_url="https://example.test", timeout=12.0)
+    client, session = make_client(settings)
+    response = Mock()
+    response.headers = {"Content-Type": "application/json"}
+    response.json.return_value = {"ok": True}
+    session.get.return_value = response
+
+    assert client.get("prices", timeout=3.5) == {"ok": True}
+    session.get.assert_called_once_with(
+        "https://example.test/prices",
+        timeout=3.5,
+    )
+
+
+def test_get_forwards_additional_keyword_arguments() -> None:
+    client, session = make_client()
+    response = Mock()
+    response.headers = {"Content-Type": "application/json"}
+    response.json.return_value = {"ok": True}
+    session.get.return_value = response
+    params = {"market": "Lagos", "limit": 5}
+
+    assert client.get("prices", params=params) == {"ok": True}
+    session.get.assert_called_once_with(
+        "https://example.test/prices",
+        timeout=15.0,
+        params=params,
+    )
+
+
+def test_client_configures_default_headers() -> None:
+    client, session = make_client()
+
+    assert session.headers == {
+        "User-Agent": "WorldOfWazeerDataIngestion/1.0",
+        "Accept": "application/json",
+    }
+
+
+def test_client_configures_api_key_header_from_settings() -> None:
+    settings = Settings(
+        base_url="https://example.test",
+        api_key="test-only-api-key",
+    )
+    _, session = make_client(settings)
+
+    assert session.headers["X-API-Key"] == "test-only-api-key"
+
+
+def test_context_manager_closes_session_after_successful_block() -> None:
+    client, session = make_client()
+
+    with client as entered_client:
+        assert entered_client is client
+
+    session.close.assert_called_once_with()
+
+
+def test_context_manager_closes_session_after_exception() -> None:
+    client, session = make_client()
+
+    with pytest.raises(RuntimeError, match="test failure"):
+        with client:
+            raise RuntimeError("test failure")
+
+    session.close.assert_called_once_with()
 
 
 def test_get_propagates_http_error() -> None:
@@ -56,7 +126,9 @@ def test_get_rejects_non_json_and_malformed_json() -> None:
     response = Mock()
     response.headers = {"Content-Type": "text/plain"}
     session.get.return_value = response
-    with pytest.raises(UnexpectedMediaTypeError, match="unsupported response media type"):
+    with pytest.raises(
+        UnexpectedMediaTypeError, match="unsupported response media type"
+    ):
         client.get("prices")
 
     response.headers = {"Content-Type": "application/json"}
@@ -72,7 +144,10 @@ def test_get_rejects_non_json_and_malformed_json() -> None:
     ("request_error", "expected_error"),
     [
         (requests.Timeout("timed out with api_key=private-token"), APITimeoutError),
-        (requests.ConnectionError("failed URL has api_key=private-token"), APIConnectionError),
+        (
+            requests.ConnectionError("failed URL has api_key=private-token"),
+            APIConnectionError,
+        ),
     ],
 )
 def test_get_wraps_connection_failures_without_leaking_request_details(
@@ -111,7 +186,13 @@ def test_get_accepts_json_media_types(content_type: str) -> None:
 
 @pytest.mark.parametrize(
     "content_type",
-    ["text/json", "application/notjson", "application/jsonp", "text/plain; note=json", ""],
+    [
+        "text/json",
+        "application/notjson",
+        "application/jsonp",
+        "text/plain; note=json",
+        "",
+    ],
 )
 def test_get_rejects_unrelated_json_looking_media_types(content_type: str) -> None:
     client, session = make_client()
@@ -119,7 +200,9 @@ def test_get_rejects_unrelated_json_looking_media_types(content_type: str) -> No
     response.headers = {"Content-Type": content_type}
     session.get.return_value = response
 
-    with pytest.raises(UnexpectedMediaTypeError, match="unsupported response media type"):
+    with pytest.raises(
+        UnexpectedMediaTypeError, match="unsupported response media type"
+    ):
         client.get("prices")
 
 
