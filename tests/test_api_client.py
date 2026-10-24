@@ -1,7 +1,13 @@
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from unittest.mock import Mock
 
 import pytest
 import requests
+
 from app.api_client import (
     APIClient,
     APIConnectionError,
@@ -19,6 +25,42 @@ def make_client(settings: Settings | None = None) -> tuple[APIClient, Mock]:
     return APIClient(
         settings or Settings(base_url="https://example.test"), session=session
     ), session
+
+
+@contextmanager
+def retry_test_server(statuses: list[int]) -> Iterator[tuple[str, list[int]]]:
+    """Run a loopback server returning controlled statuses and count each request."""
+    remaining_statuses = list(statuses)
+    attempts: list[int] = []
+
+    class RetryHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            status = remaining_statuses.pop(0) if remaining_statuses else statuses[-1]
+            attempts.append(status)
+            payload = {"ok": True} if status == 200 else {"error": "temporary"}
+            body = json.dumps(payload).encode("utf-8")
+
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RetryHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", attempts
+    finally:
+        try:
+            server.shutdown()
+        finally:
+            thread.join(timeout=5)
+            server.server_close()
 
 
 def test_get_returns_json_and_uses_timeout() -> None:
@@ -95,9 +137,8 @@ def test_context_manager_closes_session_after_successful_block() -> None:
 def test_context_manager_closes_session_after_exception() -> None:
     client, session = make_client()
 
-    with pytest.raises(RuntimeError, match="test failure"):
-        with client:
-            raise RuntimeError("test failure")
+    with pytest.raises(RuntimeError, match="test failure"), client:
+        raise RuntimeError("test failure")
 
     session.close.assert_called_once_with()
 
@@ -226,3 +267,24 @@ def test_http_adapters_use_bounded_retry_policy() -> None:
     assert retry.respect_retry_after_header is True
     assert retry.raise_on_status is False
     client.close()
+
+
+def test_get_retries_503_then_returns_successful_json() -> None:
+    with retry_test_server([503, 200]) as (base_url, attempts):
+        settings = Settings(base_url=base_url, max_retries=1, backoff_factor=0)
+
+        with APIClient(settings) as client:
+            assert client.get("prices") == {"ok": True}
+            assert attempts == [503, 200]
+
+
+def test_get_raises_http_error_after_retry_limit_is_exhausted() -> None:
+    with retry_test_server([503, 503, 503]) as (base_url, attempts):
+        settings = Settings(base_url=base_url, max_retries=2, backoff_factor=0)
+
+        with APIClient(settings) as client:
+            with pytest.raises(APIHTTPError) as error:
+                client.get("prices")
+
+            assert error.value.status_code == 503
+            assert attempts == [503, 503, 503]

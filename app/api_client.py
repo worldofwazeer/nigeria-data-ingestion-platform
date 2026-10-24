@@ -1,6 +1,6 @@
 """Generic HTTP transport with retries and JSON response handling."""
 
-from typing import Any, TypeAlias, Union
+from typing import Any, TypeAlias
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -8,15 +8,9 @@ from urllib3.util.retry import Retry
 
 from app.config import Settings
 
-JsonValue: TypeAlias = Union[
-    None,
-    bool,
-    int,
-    float,
-    str,
-    list["JsonValue"],
-    dict[str, "JsonValue"],
-]
+JsonValue: TypeAlias = (
+    None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+)
 
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 
